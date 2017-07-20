@@ -1,0 +1,266 @@
+<?php
+/**
+ * Cache behavior class.
+ *
+ * @copyright     Copyright 2010, Jeremy Harris
+ * @link          http://42pixels.com
+ * @package       cacher
+ * @subpackage    cacher.models.behaviors
+ */
+
+/**
+ * Cache Behavior
+ *
+ * Auto-caches find results into the cache. Running an exact find again will
+ * pull from the cache. Requires the CacherSource datasource.
+ *
+ * @package       cacher
+ * @subpackage    cacher.models.behaviors
+ */
+class CacheBehavior extends ModelBehavior {
+
+/**
+ * Whether or not to cache this call's results
+ *
+ * @var boolean
+ */
+	public $cacheResults = false;
+
+/**
+ * Settings
+ *
+ * @var array
+ */
+	public $settings;
+	
+	// track if a query was actually submitted
+	public $queried_count = 0;
+	public $this_queried = false;
+	
+	// track if a query is recached
+	public $recache_count = 0;
+	public $this_recached = false;
+	
+/**
+ * Sets up a connection using passed settings
+ *
+ * ### Config
+ * - `config` The name of an existing Cache configuration to use. Default is 'default'
+ * - `clearOnSave` Whether or not to delete the cache on saves
+ * - `clearOnDelete` Whether or not to delete the cache on deletes
+ * - `auto` Automatically cache or look for `'cacher'` in the find conditions
+ *		where the key is `true` or a duration
+ *
+ * @param Model $Model The calling model
+ * @param array $config Configuration settings
+ * @see Cache::config()
+ */
+	public function setup(Model $Model, $config = array()) {
+		$_defaults = array(
+			'config' => 'default',
+			'clearOnDelete' => true,
+			'clearOnSave' => true,
+			'auto' => false,
+			'gzip' => true
+		);
+		$settings = array_merge($_defaults, $config);
+		
+		$Model->recach_fstat = array();
+		
+		$Model->_useDbConfig = $Model->useDbConfig;
+		$ds = ConnectionManager::getDataSource($Model->useDbConfig);
+		if(!in_array('cacher', ConnectionManager::sourceList())) {
+			$settings += array(
+				'original' => $Model->useDbConfig,
+				'datasource' => 'Cacher.CacheSource'
+			);
+			$settings = array_merge($ds->config, $settings);
+			ConnectionManager::create('cacher', $settings);
+		} else {
+			$ds = ConnectionManager::getDataSource('cacher');
+			$ds->config = array_merge($ds->config, $settings);
+		}
+
+		if(!isset($this->settings[$Model->alias])) {
+			$this->settings[$Model->alias] = $settings;
+		}
+		$this->settings[$Model->alias] = array_merge($this->settings[$Model->alias], $settings);
+	}
+	
+/**
+ * Returns the current settings
+ *
+ */
+	public function settings(Model $Model)
+	{
+		return $this->settings[$Model->alias];
+	}
+
+/**
+ * Intercepts find to use the caching datasource instead
+ *
+ * If `$queryData['cacher']` is true, it will cache based on the setup settings
+ * If `$queryData['cacher']` is a duration, it will cache using the setup settings
+ * and the new duration.
+ *
+ * @param Model $Model The calling model
+ * @param array $queryData The query
+ */
+	public function beforeFind(Model $Model, $queryData = array()) {
+		$this->cacheResults = false; 
+		
+		$cacher = ( isset($queryData['cacher']) ? $queryData['cacher'] : ( isset($Model->cacher) ? $Model->cacher : false) );
+		
+		if($cacher) {
+			if(is_string($cacher)) {
+				$ds = ConnectionManager::getDataSource('cacher');
+				Cache::config($this->settings[$Model->alias]['config'], array('duration' => $cacher));
+				$this->cacheResults = true;
+			} else {
+				$this->cacheResults = (boolean)$cacher;
+			}
+			if(isset($queryData['cacher'])) unset($queryData['cacher']);
+			if(isset($Model->cacher)) unset($Model->cacher);
+		}
+		$this->cacheResults = $this->cacheResults || $this->settings[$Model->alias]['auto'];
+		
+		if($this->cacheResults) {
+			$Model->setDataSource('cacher');
+		}
+		return $queryData;
+	}
+
+/**
+ * Intercepts delete to use the caching datasource instead
+ *
+ * @param Model $Model The calling model
+ */	
+	public function beforeDelete(Model $Model, $cascade = true) {
+		if($this->settings[$Model->alias]['clearOnDelete']) {
+			$this->clearCache($Model, true);
+		}
+		return parent::beforeDelete($Model, $cascade);
+	}
+
+/**
+ * Intercepts save to use the caching datasource instead
+ *
+ * @param Model $Model The calling model
+ */
+	public function beforeSave(Model $Model, $options = array()) {
+		if($this->settings[$Model->alias]['clearOnSave']) {
+			$this->clearCache($Model, false);
+		}
+		return parent::beforeSave($Model, $options);
+	}
+
+/**
+ * Clears all of the cache for this model's find queries. Optionally, pass
+ * `$queryData` to just clear a specific query
+ *
+ * @param Model $Model The calling model
+ * @return boolean
+ */
+	public function clearCache(Model $Model, $clear_map = false) {
+		$ds = ConnectionManager::getDataSource('cacher');
+		$success = $ds->clearModelCache($Model, $clear_map);
+		return $success;
+	}
+	
+/*
+ * Refreshes the cache for the queries that are marked for recaching
+ * @param Model $Model
+ */
+	public function Cacher_recache(Model $Model, $modelName = false, $queryData = false)
+	{
+		$this->this_recached = false;
+		$this->this_queried = false;
+		$ds = ConnectionManager::getDataSource('cacher');
+		$results = $ds->recache($Model, $modelName, $queryData);
+		if($ds->recached) 
+		{
+			$this->recache_count++;
+			$this->this_recached = true; 
+		}
+		if($ds->queried) 
+		{
+			$this->queried_count++;
+			$this->this_queried = true; 
+		}
+		return $results;
+	}
+	
+	public function Cacher_isRecached(Model $Model)
+	{
+		return $this->this_recached;
+	}
+	
+	public function Cacher_getRecacheCount(Model $Model)
+	{
+		return $this->recache_count;
+	}
+	
+	public function Cacher_isQueried(Model $Model)
+	{
+		return $this->this_queried;
+	}
+	
+	public function Cacher_getQueriedCount(Model $Model)
+	{
+		return $this->queried_count;
+	}
+	
+	public function Cacher_fstat(Model $Model, $key = false)
+	{
+		if(!$key)
+		{
+			return false;
+		}
+		
+		$ds = ConnectionManager::getDataSource('cacher');
+		if(method_exists($ds, 'fstat'))
+		{
+			return $ds->fstat($Model, $key);
+		}
+		return false;
+	}
+	
+	public function Cacher_deleteRecache(Model $Model, $key = false, $queryData = false)
+	{
+		$ds = ConnectionManager::getDataSource('cacher');
+		$results = $ds->deleteRecache($Model, $key, $queryData);
+		return $results;
+	}
+	
+
+/*
+ * Prepares a query by adding missing data. This function is needed because
+ * reads on the database typically bypass Model::find() which is where the query
+ * is changed.
+ *
+ * @param array $query The query
+ * @return array The modified query
+ * @see Model::find()
+ */
+	protected function _prepareFind(Model $Model, $query = array()) {
+		$query = array_merge(
+			array(
+				'conditions' => null, 'fields' => null, 'joins' => array(), 'limit' => null,
+				'offset' => null, 'order' => null, 'page' => null, 'group' => null, 'callbacks' => true
+			),
+			(array)$query
+		);
+		if(!is_numeric($query['page']) || intval($query['page']) < 1) {
+			$query['page'] = 1;
+		}
+		if($query['page'] > 1 && !empty($query['limit'])) {
+			$query['offset'] = ($query['page'] - 1) * $query['limit'];
+		}
+		if($query['order'] === null && $Model->order !== null) {
+			$query['order'] = $Model->order;
+		}
+		$query['order'] = array($query['order']);
+
+		return $query;
+	}
+}
