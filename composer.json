@@ -3,7 +3,7 @@
 	"description" : "CakePHP Plugin: Database Query Cacher",
 	"type" : "cakephp-plugin",
 	"keywords" : ["cakephp", "plugin", "database", "cacher"],
-	"license": "proprietary",
+	"license": "mit",
 	"authors": [
 		{
 			"name": "Brian French",
